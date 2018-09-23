@@ -1,0 +1,44 @@
+name:                speedy
+version:             0.1.0.0
+synopsis:            Speed Run Timer
+author:              Philip Kranz
+maintainer:          pk@pmlk.net
+copyright:           2018 Philip Kranz
+category:            Games
+build-type:          Simple
+-- extra-source-files:
+cabal-version:       >=1.10
+
+executable speedy
+  hs-source-dirs:      app
+  main-is:             Main.hs
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base
+                     , aeson
+                     , bytestring
+                     , containers
+                     , directory
+                     , filepath
+                     , mtl
+                     , text
+                     , time
+                     , X11
+  default-language:    Haskell2010
+
+executable speedy-gui
+  hs-source-dirs:      app
+  main-is:             MainGUI.hs
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base
+                     , aeson
+                     , bytestring
+                     , containers
+                     , directory
+                     , disguise
+                     , filepath
+                     , ListZipper
+                     , mtl
+                     , text
+                     , time
+                     , X11
+  default-language:    Haskell2010
