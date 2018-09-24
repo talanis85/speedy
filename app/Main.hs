@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Main where
 
 import Control.Concurrent
@@ -7,12 +8,17 @@ import Control.Concurrent.MVar
 import Control.Monad
 import Control.Monad.State
 import Control.Monad.Trans
+import Data.List
 import qualified Data.List.Zipper as LZ
 import qualified Data.Map as Map
 import Data.Map (Map)
+import Data.Monoid
 import Data.Text.Lazy (Text, unpack)
 import Data.Time.Clock
 import Data.Time.Clock.POSIX
+import Data.Time.Format
+import Development.GitRev
+import Options.Applicative
 import Text.Printf
 import System.Directory
 import System.IO
@@ -23,6 +29,36 @@ import Graphics.Disguise.Gtk.Main
 
 import qualified GlobalHotkeys as GH
 import Types
+
+data Options = Options
+  { optCommand :: IO ()
+  }
+
+version :: String
+version = $(gitBranch) ++ "@" ++ $(gitHash)
+
+commandLineP :: ParserInfo Options
+commandLineP = info (helper <*> (Options <$> commandP))
+  (  fullDesc
+  <> progDesc "A speedrun timer"
+  <> header "speedy - A speedrun timer"
+  <> footer ("Version: " ++ version)
+  )
+
+commandP :: Parser (IO ())
+commandP = hsubparser
+  (  command "list"     (info (pure cmdList)
+                              (progDesc "List all runs."))
+  <> command "show"     (info (cmdShow <$> runNumberArgument)
+                              (progDesc "Show a specific run."))
+  ) <|> pure cmdRun
+
+runNumberArgument = argument auto (metavar "RUN")
+
+main :: IO ()
+main = do
+  opts <- execParser commandLineP
+  optCommand opts
 
 loopMVar :: MVar a -> (IO ()) -> IO a
 loopMVar mvar action = do
@@ -80,8 +116,8 @@ drawRun cur t def runInfos run = alignLeft (fixh 100 (fixw 500 (scale mainTime))
     drawDoneTime = text . formatMsecShort
     drawTodoTime = text . formatMsecShort
 
-main :: IO ()
-main = batchMain $ \draw' evchan -> do
+cmdRun :: IO ()
+cmdRun = batchMain $ \draw' evchan -> do
   f <- loadFont "Droid Sans 12"
   let draw = draw' . withStyling (font f)
   runDef <- loadRunDef "./def"
@@ -119,3 +155,32 @@ main = batchMain $ \draw' evchan -> do
   save <- takeMVar sem
 
   if save then writeRunInfos "./runs" (runs ++ [run]) else return ()
+
+cmdList :: IO ()
+cmdList = do
+  runDef <- loadRunDef "./def"
+  runs <- loadRunInfos "./runs"
+
+  forM_ (zip [0..] runs) $ \(i, runInfo) -> do
+    printf "%-5d %s\n" (i :: Int) (formatTime defaultTimeLocale "%c" (posixSecondsToUTCTime (msecToPosix (rDate runInfo))))
+
+cmdShow :: Int -> IO ()
+cmdShow n = do
+  runDef <- loadRunDef "./def"
+  runs <- loadRunInfos "./runs"
+
+  let absoluteRun = rRun $ runs !! n
+  let relativeRun = toRelative (rdSplits runDef) absoluteRun
+  let bestRelative = best $ map (toRelative (rdSplits runDef) . rRun) runs
+
+  forM_ (rdSplits runDef) $ \name -> do
+    let absoluteTime = unAbsolute <$> lookupTime name absoluteRun
+    let relativeTime = unRelative <$> lookupTime name relativeRun
+    let absoluteDiff = subtract <$> (unAbsolute <$> lookupTime name (best (rRun <$> runs))) <*> absoluteTime
+    let relativeDiff = subtract <$> (unRelative <$> lookupTime name bestRelative) <*> relativeTime
+    printf "%30s %10s %10s %10s %10s\n"
+      name
+      (fromTime "---" (fmap formatMsec absoluteTime))
+      (fromTime "---" (fmap formatMsec relativeTime))
+      (fromTime "---" (fmap formatMsecShort absoluteDiff))
+      (fromTime "---" (fmap formatMsecShort relativeDiff))

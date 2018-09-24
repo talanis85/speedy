@@ -1,5 +1,6 @@
 { mkDerivation, aeson, base, bytestring, containers, directory
-, disguise, filepath, ListZipper, mtl, stdenv, text, time, X11
+, disguise, filepath, gitrev, ListZipper, mtl, optparse-applicative
+, stdenv, text, time, X11
 }:
 mkDerivation {
   pname = "speedy";
@@ -8,8 +9,8 @@ mkDerivation {
   isLibrary = false;
   isExecutable = true;
   executableHaskellDepends = [
-    aeson base bytestring containers directory disguise filepath
-    ListZipper mtl text time X11
+    aeson base bytestring containers directory disguise filepath gitrev
+    ListZipper mtl optparse-applicative text time X11
   ];
   description = "Speed Run Timer";
   license = stdenv.lib.licenses.unfree;

@@ -40,8 +40,10 @@ executable speedy
                      , directory
                      , disguise
                      , filepath
+                     , gitrev
                      , ListZipper
                      , mtl
+                     , optparse-applicative
                      , text
                      , time
                      , X11

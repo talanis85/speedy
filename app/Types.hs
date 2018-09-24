@@ -40,6 +40,9 @@ type Msec = Integer
 posixToMsec :: POSIXTime -> Msec
 posixToMsec = (`div` (10^9)) . diffTimeToPicoseconds . realToFrac
 
+msecToPosix :: Msec -> POSIXTime
+msecToPosix = realToFrac . picosecondsToDiffTime . (* (10^9))
+
 timeToMsec :: Integer -> Integer -> Integer -> Integer -> Msec
 timeToMsec h m s ms = h * 60 * 60 * 1000 + m * 60 * 1000 + s * 1000 + ms
 
@@ -88,7 +91,7 @@ instance ToJSON (Time (Absolute Msec)) where
 
 type Run = Map Text (Time (Absolute Msec))
 
-lookupTime :: Text -> Run -> Time (Absolute Msec)
+lookupTime :: Text -> Map Text (Time a) -> Time a
 lookupTime name = Map.findWithDefault InvalidTime name
 
 runToList :: [Text] -> Run -> [Time (Absolute Msec)]
@@ -161,6 +164,3 @@ formatMsecShort msec = printf "%c%d.%01d" sgn s ds
   where (sgn, msec') = ((if msec < 0 then '-' else ' '), abs msec)
         (s, ms) = msec' `divMod` 1000
         ds = ms `div` 100
-
-formatTime InvalidTime = printf "%11s" ("---" :: Text)
-formatTime (ValidTime s) = formatMsec s
