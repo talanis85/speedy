@@ -12,6 +12,8 @@ cabal-version:       >=1.10
 executable speedy
   hs-source-dirs:      app
   main-is:             Main.hs
+  other-modules:       GlobalHotkeys
+                     , Types
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   build-depends:       base
                      , aeson
@@ -28,6 +30,8 @@ executable speedy
 executable speedy-gui
   hs-source-dirs:      app
   main-is:             MainGUI.hs
+  other-modules:       GlobalHotkeys
+                     , Types
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   build-depends:       base
                      , aeson
