@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
@@ -6,12 +7,19 @@ import Control.Concurrent.MVar
 import Control.Monad
 import Control.Monad.State
 import Control.Monad.Trans
-import Data.Text.Lazy (Text)
+import qualified Data.List.Zipper as LZ
+import qualified Data.Map as Map
+import Data.Map (Map)
+import Data.Text.Lazy (Text, unpack)
 import Data.Time.Clock
 import Data.Time.Clock.POSIX
 import Text.Printf
 import System.Directory
 import System.IO
+
+import Graphics.Disguise.Cairo
+import Graphics.Disguise.Gtk.Event
+import Graphics.Disguise.Gtk.Main
 
 import qualified GlobalHotkeys as GH
 import Types
@@ -24,10 +32,60 @@ loopMVar mvar action = do
     Nothing -> threadDelay 100000 >> loopMVar mvar action
     Just r -> return r
 
+drawRun :: Either Bool Text -> Msec -> RunDef -> [RunInfo] -> RunInfo -> CairoWidget (V Dim) (V Dim) (StyleT IO)
+drawRun cur t def runInfos run = alignLeft (fixh 100 (fixw 500 (scale mainTime))) `topOf` runList
+  where
+    mainTime :: CairoWidget (F Dim) (F Dim) (StyleT IO)
+    mainTime = text (formatMsec t)
+
+    runList :: CairoWidget (V Dim) (V Dim) (StyleT IO)
+    runList = listOf splitZipper
+
+    (doneSplits, currentSplits, todoSplits) = case cur of
+      Left False -> ([], [], rdSplits def)
+      Left True -> (rdSplits def, [], [])
+      Right cur' -> let (a, b) = break (== cur') (rdSplits def) in (a, [head b], tail b)
+
+    splitZipper = LZ.Zip (map (withSelectionBox drawDoneSplit) (reverse doneSplits))
+                         (map (withSelectionBox drawCurrentSplit) currentSplits
+                          ++ map (withSelectionBox drawTodoSplit) todoSplits)
+
+    withSelectionBox f name True = box (f name)
+    withSelectionBox f name False = f name
+
+    runs = map rRun runInfos
+
+    drawTodoSplit name = tabularH
+      [ (0.5, alignLeft (text (unpack name)))
+      , (0.5, alignLeft (drawTime (drawTodoTime <$> unAbsolute <$> lookupTime name (best runs))))
+      ]
+
+    drawDoneSplit name = tabularH
+      [ (0.5, alignLeft (text (unpack name)))
+      , (0.2, alignLeft (drawTime (drawDoneTime <$> unAbsolute <$> lookupTime name (rRun run))))
+      , let diff = subtract <$> (unAbsolute <$> lookupTime name (best runs)) <*> (unAbsolute <$> lookupTime name (rRun run))
+        in (0.3, alignLeft (drawTime (drawDoneTime <$> diff)))
+      ]
+
+    drawCurrentSplit name = tabularH
+      [ (0.5, alignLeft (text (unpack name)))
+      , (0.2, alignLeft (text (formatMsecShort t)))
+      , let diff = subtract <$> (unAbsolute <$> lookupTime name (best runs)) <*> pure t
+        in (0.3, alignLeft (drawTime (drawDoneTime <$> diff)))
+      ]
+
+    drawTime InvalidTime = text "---"
+    drawTime (ValidTime w) = w
+
+    drawDoneTime = text . formatMsecShort
+    drawTodoTime = text . formatMsecShort
+
 main :: IO ()
-main = do
+main = batchMain $ \draw' evchan -> do
+  f <- loadFont "Droid Sans 12"
+  let draw = draw' . withStyling (font f)
   runDef <- loadRunDef "./def"
-  runs <- loadRuns "./runs"
+  runs <- loadRunInfos "./runs"
 
   gh <- GH.initGlobalHotkeys
 
@@ -35,53 +93,29 @@ main = do
   GH.setGlobalHotkey gh GH.xK_space GH.noModMask (putMVar sem True)
   GH.setGlobalHotkey gh GH.xK_Escape GH.noModMask (putMVar sem False)
 
-  printf "  RUN: %s    GOAL: %s\n\n" (rdTitle runDef) (rdGoal runDef)
-  printf "Press space to start!\n\n"
-
-  takeMVar sem
-
   date <- getPOSIXTime
+  (t, run) <- flip runStateT (initRunInfo date) $ do
+    beforeStart <- get
+    liftIO $ draw $ drawRun (Left False) 0 runDef runs beforeStart
 
-  printf "%20s   %10s   %10s   %10s   %10s   %10s\n"
-    ("SPLIT" :: Text)
-    ("SUM TIME" :: Text)
-    ("SPLIT TIME" :: Text)
-    ("BEST SUM" :: Text)
-    ("BEST SPLIT" :: Text)
-    ("DIFF" :: Text)
-  putStrLn (replicate 80 '-')
+    liftIO $ takeMVar sem
+    start <- liftIO $ posixToMsec <$> getPOSIXTime
 
-  start <- posixToMsec <$> getPOSIXTime
-
-  run <- flip execStateT (emptyRun date) $
-    forM_ [0..(length (rdSplits runDef) - 1)] $ \i -> do
+    forM_ (rdSplits runDef) $ \name -> do
       run <- get
-
-      let best = bestSplits runDef runs !! i
-          bestSum = bestSums runDef runs !! i
-          lastSplit = case rSplitTimes run of
-                        [] -> ValidSplit 0
-                        xs -> last xs
 
       r <- liftIO $ loopMVar sem $ do
         t <- (subtract start) <$> posixToMsec <$> getPOSIXTime
-        printf "\r%20s   %10s   %10s   %10s   %10s   %10s"
-          (rdSplits runDef !! i)
-          (formatMsec t)
-          (formatSplit (fmap (t -) lastSplit))
-          (formatSplit bestSum)
-          (formatSplit best)
-          (formatSplit (fmap (t -) bestSum))
-        hFlush stdout
+        draw $ drawRun (Right name) t runDef runs run
 
-      split <- liftIO $ if r then ValidSplit <$> subtract start <$> posixToMsec <$> getPOSIXTime else return InvalidSplit
-      modify $ \run -> run { rSplitTimes = rSplitTimes run ++ [split] }
-      liftIO $ putStrLn ""
+      split <- liftIO $ if r then ValidTime <$> Absolute <$> subtract start <$> posixToMsec <$> getPOSIXTime else return InvalidTime
+      modify $ \run -> run { rRun = Map.insert name split (rRun run) }
 
-  print run
+    end <- liftIO $ posixToMsec <$> getPOSIXTime
+    return (end - start)
 
-  putStrLn "Save this run? (y/n) "
-  hSetBuffering stdin NoBuffering
-  c <- getChar
+  draw $ drawRun (Left True) t runDef runs run `topOf` alignLeft (text "Space to save, escape to discard.")
 
-  if c == 'y' then writeRuns "./runs" (runs ++ [run]) else return ()
+  save <- takeMVar sem
+
+  if save then writeRunInfos "./runs" (runs ++ [run]) else return ()

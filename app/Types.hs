@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Types where
 
@@ -8,13 +9,14 @@ import Control.Exception
 import Data.Aeson
 import Data.Aeson.Types
 import qualified Data.ByteString.Lazy as BL
+import qualified Data.Map as Map
+import Data.Map (Map)
 import Data.Text.Lazy (Text)
 import qualified Data.Text.Lazy as Text
 import qualified Data.Text.Lazy.IO as Text
 import Data.Time.Clock
 import Data.Time.Clock.POSIX
 import Data.Time.Format
-import GHC.Generics
 import System.Directory
 import Text.Printf
 
@@ -22,7 +24,16 @@ data RunDef = RunDef
   { rdTitle :: Text
   , rdGoal :: Text
   , rdSplits :: [Text]
-  } deriving (Generic, Show, ToJSON, FromJSON)
+  } deriving (Show)
+
+instance FromJSON RunDef where
+  parseJSON = withObject "RunDef" $ \v -> RunDef
+    <$> v .: "title"
+    <*> v .: "goal"
+    <*> v .: "splits"
+
+instance ToJSON RunDef where
+  toJSON rd = object [ "title" .= rdTitle rd, "goal" .= rdGoal rd, "splits" .= rdSplits rd ]
 
 type Msec = Integer
 
@@ -32,54 +43,72 @@ posixToMsec = (`div` (10^9)) . diffTimeToPicoseconds . realToFrac
 timeToMsec :: Integer -> Integer -> Integer -> Integer -> Msec
 timeToMsec h m s ms = h * 60 * 60 * 1000 + m * 60 * 1000 + s * 1000 + ms
 
-data Split a = ValidSplit a | InvalidSplit
+data Time a = ValidTime a | InvalidTime
   deriving (Eq, Show)
 
-fromSplit :: a -> Split a -> a
-fromSplit _ (ValidSplit x) = x
-fromSplit x InvalidSplit = x
+fromTime :: a -> Time a -> a
+fromTime _ (ValidTime x) = x
+fromTime x InvalidTime = x
 
-instance Functor Split where
-  fmap f (ValidSplit x) = ValidSplit (f x)
-  fmap f InvalidSplit = InvalidSplit
+instance Functor Time where
+  fmap f (ValidTime x) = ValidTime (f x)
+  fmap f InvalidTime = InvalidTime
 
-instance Applicative Split where
-  pure = ValidSplit
+instance Applicative Time where
+  pure = ValidTime
   f <*> a = case (f, a) of
-    (ValidSplit f', ValidSplit a') -> ValidSplit (f' a')
-    _ -> InvalidSplit
+    (ValidTime f', ValidTime a') -> ValidTime (f' a')
+    _ -> InvalidTime
 
-instance Monad Split where
+instance Monad Time where
   a >>= f = case a of
-    ValidSplit a' -> f a'
-    InvalidSplit -> InvalidSplit
+    ValidTime a' -> f a'
+    InvalidTime -> InvalidTime
 
-newtype BestSplit = BestSplit { unBestSplit :: Split Msec }
-  deriving (Eq, Show)
+newtype Absolute a = Absolute { unAbsolute :: a }
+  deriving (Eq, Functor, Ord, Show)
+newtype Relative a = Relative { unRelative :: a }
+  deriving (Eq, Functor, Ord, Show)
 
-instance Ord BestSplit where
-  compare a b = case (unBestSplit a, unBestSplit b) of
-                  (InvalidSplit, InvalidSplit) -> EQ
-                  (InvalidSplit, b') -> GT
-                  (a', InvalidSplit) -> LT
-                  (ValidSplit a', ValidSplit b') -> compare a' b'
+instance (Ord a) => Ord (Time a) where
+  compare a b = case (a, b) of
+                  (InvalidTime, InvalidTime) -> EQ
+                  (InvalidTime, b') -> GT
+                  (a', InvalidTime) -> LT
+                  (ValidTime a', ValidTime b') -> compare a' b'
 
-instance FromJSON (Split Msec) where
-  parseJSON Null = return InvalidSplit
-  parseJSON (Number n) = return (ValidSplit (floor n))
-  parseJSON s = typeMismatch "Split" s
+instance FromJSON (Time (Absolute Msec)) where
+  parseJSON Null = return InvalidTime
+  parseJSON (Number n) = return (ValidTime (Absolute (floor n)))
+  parseJSON s = typeMismatch "Time" s
 
-instance ToJSON (Split Msec) where
-  toJSON InvalidSplit = Null
-  toJSON (ValidSplit n) = Number (fromIntegral n)
+instance ToJSON (Time (Absolute Msec)) where
+  toJSON InvalidTime = Null
+  toJSON (ValidTime (Absolute n)) = Number (fromIntegral n)
 
-data Run = Run
+type Run = Map Text (Time (Absolute Msec))
+
+lookupTime :: Text -> Run -> Time (Absolute Msec)
+lookupTime name = Map.findWithDefault InvalidTime name
+
+runToList :: [Text] -> Run -> [Time (Absolute Msec)]
+runToList names run = map (flip lookupTime run) names
+
+data RunInfo = RunInfo
   { rDate :: Msec
-  , rSplitTimes :: [Split Msec]
-  } deriving (Generic, Show, ToJSON, FromJSON)
+  , rRun :: Run
+  } deriving (Show)
 
-emptyRun :: POSIXTime -> Run
-emptyRun date = Run { rDate = posixToMsec date, rSplitTimes = [] }
+instance FromJSON RunInfo where
+  parseJSON = withObject "RunInfo" $ \v -> RunInfo
+    <$> v .: "date"
+    <*> v .: "run"
+
+instance ToJSON RunInfo where
+  toJSON ri = object [ "date" .= rDate ri, "run" .= rRun ri ]
+
+initRunInfo :: POSIXTime -> RunInfo
+initRunInfo date = RunInfo { rDate = posixToMsec date, rRun = Map.empty }
 
 loadRunDef :: Text -> IO RunDef
 loadRunDef file = do
@@ -88,8 +117,8 @@ loadRunDef file = do
     Nothing -> throw (userError "Invalid run definition")
     Just r -> return r
 
-loadRuns :: Text -> IO [Run]
-loadRuns file = do
+loadRunInfos :: Text -> IO [RunInfo]
+loadRunInfos file = do
   ex <- doesFileExist (Text.unpack file)
   if ex
      then do
@@ -99,38 +128,24 @@ loadRuns file = do
          Just r -> return r
      else return []
 
-writeRuns :: Text -> [Run] -> IO ()
-writeRuns file runs = BL.writeFile (Text.unpack file) (encode runs)
-
-migrateRuns :: [Run] -> [Run]
-migrateRuns = map (\r -> r { rSplitTimes = migrateSplits 0 (rSplitTimes r) })
-  where
-    migrateSplits running [] = []
-    migrateSplits running (ValidSplit s : ss) = ValidSplit (s + running) : migrateSplits (s + running) ss
+writeRunInfos :: Text -> [RunInfo] -> IO ()
+writeRunInfos file runs = BL.writeFile (Text.unpack file) (encode runs)
 
 -- Statistics
 
-independentSplits :: [Split Msec] -> [Split Msec]
-independentSplits = f (True, 0) 
+relativeTimes :: [Time (Absolute Msec)] -> [Time (Relative Msec)]
+relativeTimes = f (True, 0) 
   where
     f (valid, last) [] = []
-    f (False, last) (_            : ss) = InvalidSplit : f (False, last) ss
-    f (True,  last) (ValidSplit n : ss) = ValidSplit (n - last) : f (True, n) ss
-    f (True,  last) (InvalidSplit : ss) = InvalidSplit : f (False, last) ss
+    f (False, last) (_ : ss) = InvalidTime : f (False, last) ss
+    f (True,  last) (ValidTime (Absolute n) : ss) = ValidTime (Relative (n - last)) : f (True, n) ss
+    f (True,  last) (InvalidTime : ss) = InvalidTime : f (False, last) ss
 
-bestSplits :: RunDef -> [Run] -> [Split Msec]
-bestSplits def [] = replicate (length (rdSplits def)) InvalidSplit
-bestSplits def runs =
-  let range = [0 .. (length (rdSplits def) - 1)]
-      s = map BestSplit . independentSplits . rSplitTimes
-  in map (\i -> unBestSplit (minimum (map ((!! i) . s) runs))) range
+best :: (Ord a, Ord k) => [Map k a] -> Map k a
+best = foldr (Map.unionWith max) Map.empty
 
-bestSums :: RunDef -> [Run] -> [Split Msec]
-bestSums def [] = replicate (length (rdSplits def)) InvalidSplit
-bestSums def runs =
-  let range = [0 .. (length (rdSplits def) - 1)]
-      s = map BestSplit . rSplitTimes
-  in map (\i -> unBestSplit (minimum (map ((!! i) . s) runs))) range
+toRelative :: [Text] -> Map Text (Time (Absolute Msec)) -> Map Text (Time (Relative Msec))
+toRelative names run = Map.fromList $ zip names $ relativeTimes $ runToList names run
 
 formatMsec :: Msec -> String
 formatMsec msec = printf "%c%02d:%02d:%02d.%01d" sgn h m s ds
@@ -146,5 +161,5 @@ formatMsecShort msec = printf "%c%d.%01d" sgn s ds
         (s, ms) = msec' `divMod` 1000
         ds = ms `div` 100
 
-formatSplit InvalidSplit = printf "%11s" ("---" :: Text)
-formatSplit (ValidSplit s) = formatMsec s
+formatTime InvalidTime = printf "%11s" ("---" :: Text)
+formatTime (ValidTime s) = formatMsec s
