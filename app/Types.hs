@@ -137,12 +137,13 @@ relativeTimes :: [Time (Absolute Msec)] -> [Time (Relative Msec)]
 relativeTimes = f (True, 0) 
   where
     f (valid, last) [] = []
-    f (False, last) (_ : ss) = InvalidTime : f (False, last) ss
+    f (False, last) (InvalidTime : ss) = InvalidTime : f (False, last) ss
+    f (False, last) (ValidTime (Absolute n) : ss) = InvalidTime : f (True, n) ss
     f (True,  last) (ValidTime (Absolute n) : ss) = ValidTime (Relative (n - last)) : f (True, n) ss
     f (True,  last) (InvalidTime : ss) = InvalidTime : f (False, last) ss
 
 best :: (Ord a, Ord k) => [Map k a] -> Map k a
-best = foldr (Map.unionWith max) Map.empty
+best = foldr (Map.unionWith min) Map.empty
 
 toRelative :: [Text] -> Map Text (Time (Absolute Msec)) -> Map Text (Time (Relative Msec))
 toRelative names run = Map.fromList $ zip names $ relativeTimes $ runToList names run
