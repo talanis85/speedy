@@ -53,6 +53,10 @@ fromTime :: a -> Time a -> a
 fromTime _ (ValidTime x) = x
 fromTime x InvalidTime = x
 
+maybeTime :: Time a -> Maybe a
+maybeTime (ValidTime x) = Just x
+maybeTime InvalidTime = Nothing
+
 instance Functor Time where
   fmap f (ValidTime x) = ValidTime (f x)
   fmap f InvalidTime = InvalidTime
@@ -152,15 +156,15 @@ toRelative :: [Text] -> Map Text (Time (Absolute Msec)) -> Map Text (Time (Relat
 toRelative names run = Map.fromList $ zip names $ relativeTimes $ runToList names run
 
 formatMsec :: Msec -> String
-formatMsec msec = printf "%c%02d:%02d:%02d.%01d" sgn h m s ds
-  where (sgn, msec') = ((if msec < 0 then '-' else ' '), abs msec)
+formatMsec msec = printf "%s%02d:%02d:%02d.%01d" (sgn :: String) h m s ds
+  where (sgn, msec') = ((if msec < 0 then "-" else ""), abs msec)
         (s', ms) = msec' `divMod` 1000
         (m', s) = s' `divMod` 60
         (h, m) = m' `divMod` 60
         ds = ms `div` 100
 
 formatMsecShort :: Msec -> String
-formatMsecShort msec = printf "%c%d.%01d" sgn s ds
-  where (sgn, msec') = ((if msec < 0 then '-' else ' '), abs msec)
+formatMsecShort msec = printf "%s%d.%01d" (sgn :: String) s ds
+  where (sgn, msec') = ((if msec < 0 then "-" else ""), abs msec)
         (s, ms) = msec' `divMod` 1000
         ds = ms `div` 100
