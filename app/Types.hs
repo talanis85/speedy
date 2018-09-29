@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -73,9 +72,9 @@ instance Monad Time where
     InvalidTime -> InvalidTime
 
 newtype Absolute a = Absolute { unAbsolute :: a }
-  deriving (Eq, Functor, Ord, Show)
+  deriving (Eq, Functor, Num, Ord, Show)
 newtype Relative a = Relative { unRelative :: a }
-  deriving (Eq, Functor, Ord, Show)
+  deriving (Eq, Functor, Num, Ord, Show)
 
 instance (Ord a) => Ord (Time a) where
   compare a b = case (a, b) of
