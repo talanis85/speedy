@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -8,6 +9,7 @@ import Control.Exception
 import Data.Aeson
 import Data.Aeson.Types
 import qualified Data.ByteString.Lazy as BL
+import Data.List
 import qualified Data.Map as Map
 import Data.Map (Map)
 import Data.Text.Lazy (Text)
@@ -45,60 +47,101 @@ msecToPosix = realToFrac . picosecondsToDiffTime . (* (10^9))
 timeToMsec :: Integer -> Integer -> Integer -> Integer -> Msec
 timeToMsec h m s ms = h * 60 * 60 * 1000 + m * 60 * 1000 + s * 1000 + ms
 
-data Time a = ValidTime a | InvalidTime
+data Time a = ValidTime a | InvalidTime a
   deriving (Eq, Show)
 
-fromTime :: a -> Time a -> a
-fromTime _ (ValidTime x) = x
-fromTime x InvalidTime = x
+fromTime :: Time a -> a
+fromTime (ValidTime x) = x
+fromTime (InvalidTime x) = x
+
+fromValidTime :: a -> Time a -> a
+fromValidTime _ (ValidTime x) = x
+fromValidTime x (InvalidTime _) = x
 
 maybeTime :: Time a -> Maybe a
 maybeTime (ValidTime x) = Just x
-maybeTime InvalidTime = Nothing
+maybeTime (InvalidTime x) = Nothing
 
 instance Functor Time where
   fmap f (ValidTime x) = ValidTime (f x)
-  fmap f InvalidTime = InvalidTime
+  fmap f (InvalidTime x) = InvalidTime (f x)
 
 instance Applicative Time where
   pure = ValidTime
   f <*> a = case (f, a) of
     (ValidTime f', ValidTime a') -> ValidTime (f' a')
-    _ -> InvalidTime
+    (InvalidTime f', ValidTime a') -> InvalidTime (f' a')
+    (ValidTime f', InvalidTime a') -> InvalidTime (f' a')
+    (InvalidTime f', InvalidTime a') -> InvalidTime (f' a')
 
 instance Monad Time where
   a >>= f = case a of
     ValidTime a' -> f a'
-    InvalidTime -> InvalidTime
+    InvalidTime a' -> case f a' of
+      ValidTime x -> InvalidTime x
+      InvalidTime x -> InvalidTime x
 
 newtype Absolute a = Absolute { unAbsolute :: a }
   deriving (Eq, Functor, Num, Ord, Show)
 newtype Relative a = Relative { unRelative :: a }
   deriving (Eq, Functor, Num, Ord, Show)
 
+class FormatMsec a where
+  formatMsec :: a -> String
+  formatMsecDiff :: a -> String
+
+instance FormatMsec (Absolute Msec) where
+  formatMsec (Absolute msec) = formatMsec' msec
+  formatMsecDiff (Absolute msec) = formatMsecDiff' msec
+
+instance FormatMsec (Relative Msec) where
+  formatMsec (Relative msec) = formatMsec' msec
+  formatMsecDiff (Relative msec) = formatMsecDiff' msec
+
+formatMsec' :: Msec -> String
+formatMsec' msec = printf "%s%02d:%02d:%02d.%01d" (sgn :: String) h m s ds
+  where (sgn, msec') = ((if msec < 0 then "-" else ""), abs msec)
+        (s', ms) = msec' `divMod` 1000
+        (m', s) = s' `divMod` 60
+        (h, m) = m' `divMod` 60
+        ds = ms `div` 100
+
+formatMsecDiff' :: Msec -> String
+formatMsecDiff' msec = printf "%s%d.%01d" (sgn :: String) s ds
+  where (sgn, msec') = ((if msec < 0 then "-" else "+"), abs msec)
+        (s, ms) = msec' `divMod` 1000
+        ds = ms `div` 100
+
 instance (Ord a) => Ord (Time a) where
-  compare a b = case (a, b) of
-                  (InvalidTime, InvalidTime) -> EQ
-                  (InvalidTime, b') -> GT
-                  (a', InvalidTime) -> LT
-                  (ValidTime a', ValidTime b') -> compare a' b'
+  compare a b = compare (fromTime a) (fromTime b)
+
+newtype Best a = Best { unBest :: a }
+
+instance (Eq a) => Eq (Best (Time a)) where
+  Best (InvalidTime _) == Best (InvalidTime _) = True
+  Best (ValidTime a) == Best (ValidTime b) = a == b
+  _ == _ = False
+
+instance (Ord a) => Ord (Best (Time a)) where
+  compare (Best a) (Best b) = case (a, b) of
+                  (InvalidTime _, InvalidTime _) -> EQ
+                  (InvalidTime _, b') -> LT
+                  (a', InvalidTime _) -> GT
+                  (ValidTime a', ValidTime b') -> compare b' a'
 
 instance FromJSON (Time (Absolute Msec)) where
-  parseJSON Null = return InvalidTime
+  parseJSON (Object ob) = InvalidTime <$> Absolute <$> ob .: "invalid"
   parseJSON (Number n) = return (ValidTime (Absolute (floor n)))
   parseJSON s = typeMismatch "Time" s
 
 instance ToJSON (Time (Absolute Msec)) where
-  toJSON InvalidTime = Null
+  toJSON (InvalidTime (Absolute n))= object [("invalid", Number (fromIntegral n))]
   toJSON (ValidTime (Absolute n)) = Number (fromIntegral n)
 
 type Run = Map Text (Time (Absolute Msec))
 
-lookupTime :: Text -> Map Text (Time a) -> Time a
-lookupTime name = Map.findWithDefault InvalidTime name
-
-runToList :: [Text] -> Run -> [Time (Absolute Msec)]
-runToList names run = map (flip lookupTime run) names
+lookupTime :: Text -> Map Text (Time a) -> Maybe a
+lookupTime name run = Map.findWithDefault Nothing name (maybeTime <$> run)
 
 data RunInfo = RunInfo
   { rDate :: Msec
@@ -143,27 +186,17 @@ relativeTimes :: [Time (Absolute Msec)] -> [Time (Relative Msec)]
 relativeTimes = f (True, 0) 
   where
     f (valid, last) [] = []
-    f (False, last) (InvalidTime : ss) = InvalidTime : f (False, last) ss
-    f (False, last) (ValidTime (Absolute n) : ss) = InvalidTime : f (True, n) ss
+    f (False, last) (InvalidTime (Absolute n) : ss) = InvalidTime (Relative (n - last)) : f (False, n) ss
+    f (False, last) (ValidTime (Absolute n) : ss) = InvalidTime (Relative (n - last)) : f (True, n) ss
     f (True,  last) (ValidTime (Absolute n) : ss) = ValidTime (Relative (n - last)) : f (True, n) ss
-    f (True,  last) (InvalidTime : ss) = InvalidTime : f (False, last) ss
+    f (True,  last) (InvalidTime (Absolute n) : ss) = InvalidTime (Relative (n - last)) : f (False, n) ss
 
-best :: (Ord a, Ord k) => [Map k a] -> Map k a
-best = foldr (Map.unionWith min) Map.empty
+best :: (Ord (Best a), Ord k) => [Map k a] -> Map k a
+best runs = unBest <$> foldr (Map.unionWith max) Map.empty (fmap Best <$> runs)
 
-toRelative :: [Text] -> Map Text (Time (Absolute Msec)) -> Map Text (Time (Relative Msec))
-toRelative names run = Map.fromList $ zip names $ relativeTimes $ runToList names run
-
-formatMsec :: Msec -> String
-formatMsec msec = printf "%s%02d:%02d:%02d.%01d" (sgn :: String) h m s ds
-  where (sgn, msec') = ((if msec < 0 then "-" else ""), abs msec)
-        (s', ms) = msec' `divMod` 1000
-        (m', s) = s' `divMod` 60
-        (h, m) = m' `divMod` 60
-        ds = ms `div` 100
-
-formatMsecShort :: Msec -> String
-formatMsecShort msec = printf "%s%d.%01d" (sgn :: String) s ds
-  where (sgn, msec') = ((if msec < 0 then "-" else ""), abs msec)
-        (s, ms) = msec' `divMod` 1000
-        ds = ms `div` 100
+toRelative :: Map Text (Time (Absolute Msec)) -> Map Text (Time (Relative Msec))
+toRelative run =
+  let runList = sortOn snd $ Map.toList run
+      names = map fst runList
+      values = map snd runList
+  in Map.fromList $ zip names $ relativeTimes values

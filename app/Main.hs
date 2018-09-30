@@ -81,17 +81,17 @@ loopMVar mvar action = do
 
 data SplitInfo = SplitInfo
   { splitName :: Text
-  , splitAbsTime :: Time (Absolute Msec)
-  , splitRelTime :: Time (Relative Msec)
-  , splitAbsBest :: Time (Absolute Msec)
-  , splitRelBest :: Time (Relative Msec)
+  , splitAbsTime :: Maybe (Absolute Msec)
+  , splitRelTime :: Maybe (Relative Msec)
+  , splitAbsBest :: Maybe (Absolute Msec)
+  , splitRelBest :: Maybe (Relative Msec)
   }
 
 drawRun :: Msec -> LZ.Zipper SplitInfo -> CairoWidget (V Dim) (V Dim) (StyleT IO)
 drawRun t splitInfos = alignLeft (fixh 100 (fixw 500 (scale mainTime))) `topOf` runList
   where
     mainTime :: CairoWidget (F Dim) (F Dim) (StyleT IO)
-    mainTime = text (formatMsec t)
+    mainTime = text (formatMsec (Absolute t))
 
     runList :: CairoWidget (V Dim) (V Dim) (StyleT IO)
     runList = listOf (fmap (withSelectionBox drawSplit) (LZ.duplicatez splitInfos))
@@ -107,15 +107,14 @@ drawRun t splitInfos = alignLeft (fixh 100 (fixw 500 (scale mainTime))) `topOf` 
           col = splitColor (splitAbsTime split) (splitAbsBest split) (splitRelTime split) (splitRelBest split)
       in tabularH
         [ (0.5, alignLeft (text (unpack (splitName split))))
-        , (0.2, alignLeft (drawTime (text <$> formatMsec <$> unAbsolute <$> splitAbsTime split)))
-        , (0.3, alignLeft (withStyling (color1 col) (drawTime (text <$> formatMsecShort <$> unAbsolute <$> absDiff))))
+        , (0.2, alignLeft (drawTime (text <$> formatMsec <$> splitAbsTime split)))
+        , (0.3, alignLeft (withStyling (color1 col) (drawTime (text <$> formatMsecDiff <$> absDiff))))
         ]
 
-    drawTime InvalidTime = text "---"
-    drawTime (ValidTime w) = w
+    drawTime = fromMaybe (text "---")
 
-    isBetter (ValidTime time) (ValidTime bestTime) = time < bestTime
-    isBetter (ValidTime time) InvalidTime = True
+    isBetter (Just time) (Just bestTime) = time < bestTime
+    isBetter (Just time) Nothing = True
     isBetter _ _ = False
     splitColor absTime bestAbsTime relTime bestRelTime
       | isBetter relTime bestRelTime = RGB 1 1 0.5 
@@ -137,9 +136,9 @@ makeSplitInfoZipper cur def runInfos run = fmap makeSplitInfo (LZ.duplicatez spl
       in SplitInfo
         { splitName = name
         , splitAbsTime = lookupTime name (rRun run)
-        , splitRelTime = lookupTime name (toRelative (rdSplits def) (rRun run))
+        , splitRelTime = lookupTime name (toRelative (rRun run))
         , splitAbsBest = lookupTime name (best (map rRun runInfos))
-        , splitRelBest = lookupTime name (best (map (toRelative (rdSplits def) . rRun) runInfos))
+        , splitRelBest = lookupTime name (best (map (toRelative . rRun) runInfos))
         }
 
 cmdRun :: IO ()
@@ -171,7 +170,10 @@ cmdRun = batchMain $ \draw' evchan -> do
         let run' = run { rRun = Map.insert name (ValidTime (Absolute t)) (rRun run) }
         draw $ drawRun t $ makeSplitInfoZipper (Right name) runDef runs run'
 
-      split <- liftIO $ if r then ValidTime <$> Absolute <$> subtract start <$> posixToMsec <$> getPOSIXTime else return InvalidTime
+      split <- liftIO $
+        if r
+        then ValidTime <$> Absolute <$> subtract start <$> posixToMsec <$> getPOSIXTime
+        else InvalidTime <$> Absolute <$> subtract start <$> posixToMsec <$> getPOSIXTime
       modify $ \run -> run { rRun = Map.insert name split (rRun run) }
 
     end <- liftIO $ posixToMsec <$> getPOSIXTime
@@ -197,27 +199,27 @@ cmdShow n = do
   runs <- loadRunInfos "./runs"
 
   let absoluteRun = rRun $ runs !! n
-  let relativeRun = toRelative (rdSplits runDef) absoluteRun
-  let bestRelative = best $ map (toRelative (rdSplits runDef) . rRun) runs
+  let relativeRun = toRelative absoluteRun
+  let bestRelative = best $ map (toRelative . rRun) runs
 
   forM_ (rdSplits runDef) $ \name -> do
-    let absoluteTime = unAbsolute <$> lookupTime name absoluteRun
-    let relativeTime = unRelative <$> lookupTime name relativeRun
-    let absoluteDiff = subtract <$> (unAbsolute <$> lookupTime name (best (rRun <$> runs))) <*> absoluteTime
-    let relativeDiff = subtract <$> (unRelative <$> lookupTime name bestRelative) <*> relativeTime
+    let absoluteTime = lookupTime name absoluteRun
+    let relativeTime = lookupTime name relativeRun
+    let absoluteDiff = subtract <$> lookupTime name (best (rRun <$> runs)) <*> absoluteTime
+    let relativeDiff = subtract <$> lookupTime name bestRelative <*> relativeTime
     printf "%30s %10s %10s %10s %10s\n"
       name
-      (fromTime "---" (fmap formatMsec absoluteTime))
-      (fromTime "---" (fmap formatMsec relativeTime))
-      (fromTime "---" (fmap formatMsecShort absoluteDiff))
-      (fromTime "---" (fmap formatMsecShort relativeDiff))
+      (fromMaybe "---" (fmap formatMsec absoluteTime))
+      (fromMaybe "---" (fmap formatMsec relativeTime))
+      (fromMaybe "---" (fmap formatMsecDiff absoluteDiff))
+      (fromMaybe "---" (fmap formatMsecDiff relativeDiff))
 
 cmdPlotRuns :: IO ()
 cmdPlotRuns = do
   runDef <- loadRunDef "./def"
   runInfos <- loadRunInfos "./runs"
 
-  let maxTime = unAbsolute $ maximum $ mapMaybe maybeTime $ concat $ map (Map.elems . rRun) runInfos
+  let maxTime = maximum $ mapMaybe maybeTime $ concat $ map (Map.elems . rRun) runInfos
 
   putStrLn "set ydata time"
   putStrLn "set timefmt \"%H:%M:%S\""
@@ -228,8 +230,8 @@ cmdPlotRuns = do
     printf "  0 \"Start\" 00:00:00.0\n"
     forM_ (zip [1..] (rdSplits runDef)) $ \(i, split) -> do
       case lookupTime split (rRun runInfo) of
-        ValidTime t -> printf "  %d \"%s\" %s\n" (i :: Int) split (formatMsec (unAbsolute t))
-        InvalidTime -> return ()
+        Just t -> printf "  %d \"%s\" %s\n" (i :: Int) split (formatMsec t)
+        Nothing -> return ()
     printf "EOD\n"
 
   printf "plot "
@@ -254,13 +256,13 @@ cmdPlotSums = do
     (formatTime defaultTimeLocale "%Y-%m-%d-%H:%M:%S" (posixSecondsToUTCTime (msecToPosix minDate)))
     (formatTime defaultTimeLocale "%Y-%m-%d-%H:%M:%S" (posixSecondsToUTCTime (msecToPosix maxDate)))
 
-  let maxTime = unAbsolute $ maximum $ mapMaybe maybeTime $ concat $ map (Map.elems . rRun) runInfos
+  let maxTime = maximum $ mapMaybe maybeTime $ concat $ map (Map.elems . rRun) runInfos
   putStrLn "set ydata time"
   printf "set yrange [\"1970-01-01-00:00:00.0\" : \"1970-01-01-%s\"]\n" (formatMsec maxTime)
 
   printf "$data << EOD\n"
   forM_ (zip [1..] runInfos) $ \(j, runInfo) -> do
     printf "%s 1970-01-01-%s\n" (formatTime defaultTimeLocale "%Y-%m-%d-%H:%M:%S" (posixSecondsToUTCTime (msecToPosix (rDate runInfo))))
-                   (formatMsec (unAbsolute (maximum (mapMaybe maybeTime (Map.elems (rRun runInfo))))))
+                   (formatMsec (maximum (mapMaybe maybeTime (Map.elems (rRun runInfo)))))
   printf "EOD\n"
   printf "plot '$data' using 1:2 title \"%s - %s\" with lines\n" (rdTitle runDef) (rdGoal runDef)
