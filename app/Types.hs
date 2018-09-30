@@ -148,6 +148,11 @@ data RunInfo = RunInfo
   , rRun :: Run
   } deriving (Show)
 
+runTime :: (Ord a) => Map Text a -> a
+runTime run = case Map.toList run of
+  [] -> error "Broken (empty) run"
+  xs -> head $ sort $ map snd xs
+
 instance FromJSON RunInfo where
   parseJSON = withObject "RunInfo" $ \v -> RunInfo
     <$> v .: "date"
@@ -191,8 +196,13 @@ relativeTimes = f (True, 0)
     f (True,  last) (ValidTime (Absolute n) : ss) = ValidTime (Relative (n - last)) : f (True, n) ss
     f (True,  last) (InvalidTime (Absolute n) : ss) = InvalidTime (Relative (n - last)) : f (False, n) ss
 
-best :: (Ord (Best a), Ord k) => [Map k a] -> Map k a
-best runs = unBest <$> foldr (Map.unionWith max) Map.empty (fmap Best <$> runs)
+bestSplits :: (Ord a) => [Map Text (Time (Relative a))] -> Map Text (Time (Relative a))
+bestSplits runs = unBest <$> foldr (Map.unionWith max) Map.empty (fmap Best <$> runs)
+
+bestRun :: (Ord a) => [Map Text (Time (Absolute a))] -> Map Text (Time (Absolute a))
+bestRun runs = unBest <$> safeLast (sortOn runTime (fmap Best <$> runs))
+  where safeLast [] = Map.empty
+        safeLast (x:xs) = last (x:xs)
 
 toRelative :: Map Text (Time (Absolute Msec)) -> Map Text (Time (Relative Msec))
 toRelative run =

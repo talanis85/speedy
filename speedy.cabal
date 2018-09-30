@@ -30,7 +30,8 @@ cabal-version:       >=1.10
 executable speedy
   hs-source-dirs:      app
   main-is:             Main.hs
-  other-modules:       GlobalHotkeys
+  other-modules:       Export.SplitsIO
+                     , GlobalHotkeys
                      , Plotter.ChartJS
                      , Plotter.GnuPlot
                      , Types
@@ -50,5 +51,6 @@ executable speedy
                      , shakespeare
                      , text
                      , time
+                     , vector
                      , X11
   default-language:    Haskell2010

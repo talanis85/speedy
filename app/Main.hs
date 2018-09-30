@@ -8,6 +8,7 @@ import Control.Concurrent.MVar
 import Control.Monad
 import Control.Monad.State
 import Control.Monad.Trans
+import qualified Data.ByteString.Lazy as BL
 import Data.List
 import qualified Data.List.Zipper as LZ
 import qualified Data.Map as Map
@@ -28,6 +29,7 @@ import Graphics.Disguise.Cairo
 import Graphics.Disguise.Gtk.Event
 import Graphics.Disguise.Gtk.Main
 
+import Export.SplitsIO
 import qualified GlobalHotkeys as GH
 import qualified Plotter.ChartJS as ChartJS
 import qualified Plotter.GnuPlot as GnuPlot
@@ -56,6 +58,8 @@ commandP = hsubparser
                               (progDesc "Show a specific run."))
   <> command "plot"     (info plotP
                               (progDesc "Output various statistics as a GNUplot script"))
+  <> command "export"   (info exportP
+                              (progDesc "Export to other file formats"))
   ) <|> pure cmdRun
 
 plotP :: Parser (IO ())
@@ -64,6 +68,12 @@ plotP = hsubparser
                               (progDesc "Overlay all runs on top of each other"))
   <> command "sums"     (info (cmdPlotSums <$> plotterArgument)
                               (progDesc "Plot the sum times in chronological order"))
+  )
+
+exportP :: Parser (IO ())
+exportP = hsubparser
+  (  command "splitsio" (info (cmdExportSplitsIO <$> runNumberArgument)
+                              (progDesc "Splits.io exchange format"))
   )
 
 data Plotter = GnuPlot | ChartJS
@@ -147,8 +157,8 @@ makeSplitInfoZipper cur def runInfos run = fmap makeSplitInfo (LZ.duplicatez spl
         { splitName = name
         , splitAbsTime = lookupTime name (rRun run)
         , splitRelTime = lookupTime name (toRelative (rRun run))
-        , splitAbsBest = lookupTime name (best (map rRun runInfos))
-        , splitRelBest = lookupTime name (best (map (toRelative . rRun) runInfos))
+        , splitAbsBest = lookupTime name (bestRun (map rRun runInfos))
+        , splitRelBest = lookupTime name (bestSplits (map (toRelative . rRun) runInfos))
         }
 
 cmdRun :: IO ()
@@ -210,12 +220,12 @@ cmdShow n = do
 
   let absoluteRun = rRun $ runs !! n
   let relativeRun = toRelative absoluteRun
-  let bestRelative = best $ map (toRelative . rRun) runs
+  let bestRelative = bestSplits $ map (toRelative . rRun) runs
 
   forM_ (rdSplits runDef) $ \name -> do
     let absoluteTime = lookupTime name absoluteRun
     let relativeTime = lookupTime name relativeRun
-    let absoluteDiff = subtract <$> lookupTime name (best (rRun <$> runs)) <*> absoluteTime
+    let absoluteDiff = subtract <$> lookupTime name (bestRun (rRun <$> runs)) <*> absoluteTime
     let relativeDiff = subtract <$> lookupTime name bestRelative <*> relativeTime
     printf "%30s %10s %10s %10s %10s\n"
       name
@@ -239,3 +249,10 @@ cmdPlotSums plotter = do
   case plotter of
     GnuPlot -> putStrLn $ unpack $ GnuPlot.plotSums runDef runInfos
     ChartJS -> putStrLn $ unpack $ ChartJS.plotSums runDef runInfos
+
+cmdExportSplitsIO :: Int -> IO ()
+cmdExportSplitsIO n = do
+  runDef <- loadRunDef "./def"
+  runInfos <- loadRunInfos "./runs"
+
+  BL.putStr (exportSplitsIO runDef (runInfos !! n) runInfos)
