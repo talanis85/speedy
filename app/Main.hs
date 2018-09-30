@@ -29,6 +29,8 @@ import Graphics.Disguise.Gtk.Event
 import Graphics.Disguise.Gtk.Main
 
 import qualified GlobalHotkeys as GH
+import qualified Plotter.ChartJS as ChartJS
+import qualified Plotter.GnuPlot as GnuPlot
 import Types
 
 data Options = Options
@@ -58,11 +60,19 @@ commandP = hsubparser
 
 plotP :: Parser (IO ())
 plotP = hsubparser
-  (  command "runs"     (info (pure cmdPlotRuns)
+  (  command "runs"     (info (cmdPlotRuns <$> plotterArgument)
                               (progDesc "Overlay all runs on top of each other"))
-  <> command "sums"     (info (pure cmdPlotSums)
+  <> command "sums"     (info (cmdPlotSums <$> plotterArgument)
                               (progDesc "Plot the sum times in chronological order"))
   )
+
+data Plotter = GnuPlot | ChartJS
+
+plotterArgument = option (maybeReader reader) (short 'p' <> long "plotter" <> metavar "PLOTTER" <> value GnuPlot)
+  where
+    reader "gnuplot" = Just GnuPlot
+    reader "chartjs" = Just ChartJS
+    reader _ = Nothing
 
 runNumberArgument = argument auto (metavar "RUN")
 
@@ -214,55 +224,18 @@ cmdShow n = do
       (fromMaybe "---" (fmap formatMsecDiff absoluteDiff))
       (fromMaybe "---" (fmap formatMsecDiff relativeDiff))
 
-cmdPlotRuns :: IO ()
-cmdPlotRuns = do
+cmdPlotRuns :: Plotter -> IO ()
+cmdPlotRuns plotter = do
   runDef <- loadRunDef "./def"
   runInfos <- loadRunInfos "./runs"
+  case plotter of
+    GnuPlot -> putStrLn $ unpack $ GnuPlot.plotRuns runDef runInfos
+    ChartJS -> putStrLn $ unpack $ ChartJS.plotRuns runDef runInfos
 
-  let maxTime = maximum $ mapMaybe maybeTime $ concat $ map (Map.elems . rRun) runInfos
-
-  putStrLn "set ydata time"
-  putStrLn "set timefmt \"%H:%M:%S\""
-  printf "set yrange [0 : \"%s\"]\n" (formatMsec maxTime)
-
-  forM_ (zip [1..] runInfos) $ \(j, runInfo) -> do
-    printf "$d%d << EOD\n" (j :: Int)
-    printf "  0 \"Start\" 00:00:00.0\n"
-    forM_ (zip [1..] (rdSplits runDef)) $ \(i, split) -> do
-      case lookupTime split (rRun runInfo) of
-        Just t -> printf "  %d \"%s\" %s\n" (i :: Int) split (formatMsec t)
-        Nothing -> return ()
-    printf "EOD\n"
-
-  printf "plot "
-
-  let strs = flip map (zip [1..] runInfos) $ \(j, runInfo) ->
-        let runDate = formatTime defaultTimeLocale "%c" (posixSecondsToUTCTime (msecToPosix (rDate runInfo)))
-        in printf "'$d%d' using 1:3:xtic(2) title \"%s\" with lines" (j :: Int) runDate
-  printf (intercalate "," strs)
-  printf "\n"
-
-cmdPlotSums :: IO ()
-cmdPlotSums = do
+cmdPlotSums :: Plotter -> IO ()
+cmdPlotSums plotter = do
   runDef <- loadRunDef "./def"
   runInfos <- loadRunInfos "./runs"
-
-  let minDate = minimum $ map rDate runInfos
-      maxDate = maximum $ map rDate runInfos
-
-  putStrLn "set timefmt \"%Y-%m-%d-%H:%M:%S\""
-  putStrLn "set xdata time"
-  printf "set xrange [\"%s\" : \"%s\"]\n"
-    (formatTime defaultTimeLocale "%Y-%m-%d-%H:%M:%S" (posixSecondsToUTCTime (msecToPosix minDate)))
-    (formatTime defaultTimeLocale "%Y-%m-%d-%H:%M:%S" (posixSecondsToUTCTime (msecToPosix maxDate)))
-
-  let maxTime = maximum $ mapMaybe maybeTime $ concat $ map (Map.elems . rRun) runInfos
-  putStrLn "set ydata time"
-  printf "set yrange [\"1970-01-01-00:00:00.0\" : \"1970-01-01-%s\"]\n" (formatMsec maxTime)
-
-  printf "$data << EOD\n"
-  forM_ (zip [1..] runInfos) $ \(j, runInfo) -> do
-    printf "%s 1970-01-01-%s\n" (formatTime defaultTimeLocale "%Y-%m-%d-%H:%M:%S" (posixSecondsToUTCTime (msecToPosix (rDate runInfo))))
-                   (formatMsec (maximum (mapMaybe maybeTime (Map.elems (rRun runInfo)))))
-  printf "EOD\n"
-  printf "plot '$data' using 1:2 title \"%s - %s\" with lines\n" (rdTitle runDef) (rdGoal runDef)
+  case plotter of
+    GnuPlot -> putStrLn $ unpack $ GnuPlot.plotSums runDef runInfos
+    ChartJS -> putStrLn $ unpack $ ChartJS.plotSums runDef runInfos
