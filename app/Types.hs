@@ -151,7 +151,7 @@ data RunInfo = RunInfo
 runTime :: (Ord a) => Map Text a -> a
 runTime run = case Map.toList run of
   [] -> error "Broken (empty) run"
-  xs -> head $ sort $ map snd xs
+  xs -> last $ sort $ map snd xs
 
 instance FromJSON RunInfo where
   parseJSON = withObject "RunInfo" $ \v -> RunInfo
