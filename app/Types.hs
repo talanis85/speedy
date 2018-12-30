@@ -118,15 +118,15 @@ instance (Ord a) => Ord (Time a) where
 newtype Best a = Best { unBest :: a }
 
 instance (Eq a) => Eq (Best (Time a)) where
-  Best (InvalidTime _) == Best (InvalidTime _) = True
+  Best (InvalidTime a) == Best (InvalidTime b) = a == b
   Best (ValidTime a) == Best (ValidTime b) = a == b
   _ == _ = False
 
 instance (Ord a) => Ord (Best (Time a)) where
   compare (Best a) (Best b) = case (a, b) of
-                  (InvalidTime _, InvalidTime _) -> EQ
-                  (InvalidTime _, b') -> LT
-                  (a', InvalidTime _) -> GT
+                  (InvalidTime a', InvalidTime b') -> compare b' a'
+                  (InvalidTime a', ValidTime b') -> LT
+                  (ValidTime a', InvalidTime b') -> GT
                   (ValidTime a', ValidTime b') -> compare b' a'
 
 instance FromJSON (Time (Absolute Msec)) where
@@ -148,7 +148,7 @@ data RunInfo = RunInfo
   , rRun :: Run
   } deriving (Show)
 
-runTime :: (Ord a) => Map Text a -> a
+runTime :: Map Text (Time (Absolute Msec)) -> Time (Absolute Msec)
 runTime run = case Map.toList run of
   [] -> error "Broken (empty) run"
   xs -> last $ sort $ map snd xs
@@ -199,8 +199,8 @@ relativeTimes = f (True, 0)
 bestSplits :: (Ord a) => [Map Text (Time (Relative a))] -> Map Text (Time (Relative a))
 bestSplits runs = unBest <$> foldr (Map.unionWith max) Map.empty (fmap Best <$> runs)
 
-bestRun :: (Ord a) => [Map Text (Time (Absolute a))] -> Map Text (Time (Absolute a))
-bestRun runs = unBest <$> safeLast (sortOn runTime (fmap Best <$> runs))
+bestRun :: [Map Text (Time (Absolute Msec))] -> Map Text (Time (Absolute Msec))
+bestRun runs = safeLast (sortOn (Best . runTime) runs)
   where safeLast [] = Map.empty
         safeLast (x:xs) = last (x:xs)
 
