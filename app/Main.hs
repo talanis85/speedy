@@ -107,15 +107,46 @@ data SplitInfo = SplitInfo
   , splitRelBest :: Maybe (Relative Msec)
   }
 
-drawRun :: Msec -> LZ.Zipper SplitInfo -> CairoWidget (V Dim) (V Dim) (StyleT IO)
-drawRun t splitInfos = alignLeft (fixh 100 (fixw 500 (scale mainTime))) `topOf` runList
+drawRun :: Msec -> Either Bool Text -> RunDef -> [RunInfo] -> RunInfo -> CairoWidget (V Dim) (V Dim) (StyleT IO)
+drawRun t cur def runInfos run =
+    alignLeft (fixh 100 (fixw 500 (scale mainTime)))
+    `topOf` pad 10
+      (         tabularH [ (0.2, alignLeft (text "PB")), (0.8, alignLeft pb) ]
+        `topOf` tabularH [ (0.2, alignLeft (text "Pace")), (0.8, alignLeft pace) ]
+      )
+    `topOf` drawSplits splitInfos
   where
+    splitInfos = makeSplitInfoZipper cur def runInfos run
+
     mainTime :: CairoWidget (F Dim) (F Dim) (StyleT IO)
     mainTime = text (formatMsec (Absolute t))
 
-    runList :: CairoWidget (V Dim) (V Dim) (StyleT IO)
-    runList = listOf (fmap (withSelectionBox drawSplit) (LZ.duplicatez splitInfos))
+    lastValidDiff :: Msec
+    lastValidDiff =
+      let LZ.Zip xs' _ = splitInfos
+          xs = reverse xs'
+      in fromMaybe 0 $ getLast $ mconcat $ map (\x -> Last $ unAbsolute <$> (subtract <$> splitAbsBest x <*> splitAbsTime x)) xs
 
+    lastDiff :: Msec
+    lastDiff = if LZ.beginp splitInfos
+      then 0
+      else let split = LZ.cursor (LZ.left splitInfos)
+           in fromMaybe 0 $ unAbsolute <$> (subtract <$> splitAbsBest split <*> splitAbsTime split)
+
+    expectedTime :: Time Msec
+    expectedTime = (+) <$> (unAbsolute <$> runTime (bestRun (map rRun runInfos))) <*> ValidTime lastValidDiff
+
+    drawTime = fromMaybe (text "---") . maybeTime
+
+    pb :: CairoWidget (F Dim) (F Dim) (StyleT IO)
+    pb = drawTime (text <$> formatMsec <$> (runTime (bestRun (map rRun runInfos))))
+
+    pace :: CairoWidget (F Dim) (F Dim) (StyleT IO)
+    pace = drawTime (text <$> formatMsec <$> Absolute <$> expectedTime)
+
+drawSplits :: LZ.Zipper SplitInfo -> CairoWidget (V Dim) (V Dim) (StyleT IO)
+drawSplits splitInfos = listOf (fmap (withSelectionBox drawSplit) (LZ.duplicatez splitInfos))
+  where
     withSelectionBox f name True = box (f name)
     withSelectionBox f name False = f name
 
@@ -127,7 +158,7 @@ drawRun t splitInfos = alignLeft (fixh 100 (fixw 500 (scale mainTime))) `topOf` 
           col = splitColor (splitAbsTime split) (splitAbsBest split) (splitRelTime split) (splitRelBest split)
       in tabularH
         [ (0.5, alignLeft (text (unpack (splitName split))))
-        , (0.2, alignLeft (drawTime (text <$> formatMsec <$> splitAbsTime split)))
+        , (0.2, alignLeft (drawTime (text <$> formatMsec <$> (splitAbsTime split <|> splitAbsBest split))))
         , (0.3, alignLeft (withStyling (color1 col) (drawTime (text <$> formatMsecDiff <$> absDiff))))
         ]
 
@@ -163,7 +194,7 @@ makeSplitInfoZipper cur def runInfos run = fmap makeSplitInfo (LZ.duplicatez spl
 
 cmdRun :: IO ()
 cmdRun = batchMain $ \draw' evchan -> do
-  f <- loadFont "Droid Sans 12"
+  f <- loadFont "Droid Sans 14"
   let draw = draw' . withStyling (font f)
   runDef <- loadRunDef "./def"
   runs <- loadRunInfos "./runs"
@@ -177,7 +208,7 @@ cmdRun = batchMain $ \draw' evchan -> do
   date <- getPOSIXTime
   (t, run) <- flip runStateT (initRunInfo date) $ do
     beforeStart <- get
-    liftIO $ draw $ drawRun 0 $ makeSplitInfoZipper (Left False) runDef runs beforeStart
+    liftIO $ draw $ drawRun 0 (Left False) runDef runs beforeStart
 
     liftIO $ takeMVar sem
     start <- liftIO $ posixToMsec <$> getPOSIXTime
@@ -188,7 +219,7 @@ cmdRun = batchMain $ \draw' evchan -> do
       r <- liftIO $ loopMVar sem $ do
         t <- (subtract start) <$> posixToMsec <$> getPOSIXTime
         let run' = run { rRun = Map.insert name (ValidTime (Absolute t)) (rRun run) }
-        draw $ drawRun t $ makeSplitInfoZipper (Right name) runDef runs run'
+        draw $ drawRun t (Right name) runDef runs run'
 
       split <- liftIO $
         if r
@@ -199,7 +230,7 @@ cmdRun = batchMain $ \draw' evchan -> do
     end <- liftIO $ posixToMsec <$> getPOSIXTime
     return (end - start)
 
-  draw $ drawRun t (makeSplitInfoZipper (Left True) runDef runs run) `topOf` alignLeft (text "Space to save, escape to discard.")
+  draw $ drawRun t (Left True) runDef runs run `topOf` alignLeft (text "Space to save, escape to discard.")
 
   save <- takeMVar sem
 
