@@ -1,0 +1,27 @@
+{
+  "title": "Super Metroid",
+  "goal": "Any%",
+  "splits":
+    [ "Escape 1"
+    , "Morph Ball"
+    , "Bomb"
+    , "Super Missile"
+    , "Charge Beam"
+    , "Spazer"
+    , "Varia Suit"
+    , "High Jump"
+    , "Speed"
+    , "Wave Beam"
+    , "Ice Beam"
+    , "Power Bomb"
+    , "Phantoon"
+    , "Gravity Suit"
+    , "Botwoon"
+    , "Space Jump"
+    , "Plasma Beam"
+    , "Ridley E-Tank"
+    , "Golden Four"
+    , "Mother Brain"
+    , "Escape 2"
+    ]
+}
